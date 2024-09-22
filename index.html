@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Image Editor PoC</title>
+    <link rel="icon" href="https://fav.farm/🖼️" />
+    <script type="module">
+      const input = document.querySelector('input');
+      const img = document.querySelector('img');
+      const openImageFileButton = document.querySelector('#openImageFileButton');
+      const useSampleImageButton = document.querySelector('#useSampleImageButton');
+      const dialog = document.querySelector('dialog');
+      const canvas = dialog.querySelector('canvas');
+      const select = dialog.querySelector('select');
+      const ratioXInput = dialog.querySelector('#ratioXInput');
+      const ratioYInput = dialog.querySelector('#ratioYInput');
+      const sizeXInput = dialog.querySelector('#sizeXInput');
+      const sizeYInput = dialog.querySelector('#sizeYInput');
+      const formatsDiv = dialog.querySelector('#formatsDiv');
+      const qualityInput = dialog.querySelector('#qualityInput');
+      const debugDiv = dialog.querySelector('#debugDiv');
+      const resetChangesButton = dialog.querySelector('#resetChangesButton');
+      const confirmButton = dialog.querySelector('#confirmButton');
+      const cancelButton = dialog.querySelector('#cancelButton');
+
+      const PRESETS = [
+        { key: 'custom', name: 'Any custom size' },
+        { key: '1:1', name: '1:1 custom size', ratioX: 1, ratioY: 1 },
+        { key: '1:2', name: '2:1 custom size', ratioX: 2, ratioY: 1 },
+        { key: '3:4', name: '3:4 custom size', ratioX: 3, ratioY: 4 },
+        { key: '16:9', name: '16:9 custom size', ratioX: 16, ratioY: 9 },
+        { key: '16:10', name: '16:10 custom size', ratioX: 16, ratioY: 10 },
+        { key: 'profile-picture', name: 'Profile picture (150x150)', ratioX: 1, ratioY: 1, width: 150, height: 150 },
+        { key: 'hero-banner', name: 'Hero banner (800x200)', ratioX: 8, ratioY: 2, width: 800, height: 200 },
+        { key: 'side-graphic', name: 'Side graphic (150x600)', ratioX: 1, ratioY: 4, width: 150, height: 600 },
+      ];
+
+      const DEFAULT_PRESET = PRESETS[0];
+
+      for (const preset of PRESETS) {
+        const option = document.createElement('option');
+        option.value = preset.key;
+        option.textContent = preset.name;
+        option.selected = preset.key === DEFAULT_PRESET.key;
+        select.append(option);
+      }
+
+      const DEFAULT_RATIO_X = DEFAULT_PRESET.ratioX;
+      ratioXInput.value = DEFAULT_RATIO_X;
+
+      const DEFAULT_RATIO_Y = DEFAULT_PRESET.ratioY;
+      ratioYInput.value = DEFAULT_RATIO_Y;
+
+      const DEFAULT_SIZE_X = DEFAULT_PRESET.width;
+      sizeXInput.value = DEFAULT_SIZE_X;
+
+      const DEFAULT_SIZE_Y = DEFAULT_PRESET.height;
+      sizeYInput.value = DEFAULT_SIZE_Y;
+
+      const DEFAULT_QUALITY = 1;
+      qualityInput.value = DEFAULT_QUALITY;
+
+      const FORMATS = [
+        { key: 'png', name: 'PNG', supportsQuality: false },
+        { key: 'jpeg', name: 'JPEG', supportsQuality: true },
+        { key: 'webp', name: 'WebP', supportsQuality: true },
+      ];
+
+      const DEFAULT_FORMAT = FORMATS[0];
+
+      /** @type {Image} */
+      let original;
+      let ratioX = DEFAULT_RATIO_X;
+      let ratioY = DEFAULT_RATIO_Y;
+      let sizeX = DEFAULT_SIZE_X;
+      let sizeY = DEFAULT_SIZE_Y;
+      let quality = DEFAULT_QUALITY;
+      let format = DEFAULT_FORMAT;
+
+      function renderFormats() {
+        formatsDiv.replaceChildren();
+
+        for (const _format of FORMATS) {
+          const label = document.createElement('label');
+          const input = document.createElement('input');
+          input.id = `${_format.key}Input`;
+          input.type = 'radio';
+          input.name = 'format';
+          input.value = _format.key;
+          input.checked = _format.key === format.key;
+          label.append(input, _format.name);
+          formatsDiv.append(label);
+
+          input.addEventListener('click', () => {
+            format = _format;
+            renderFormats();
+            render();
+          });
+        }
+
+        qualityInput.disabled = !format.supportsQuality;
+      }
+
+      renderFormats();
+
+      openImageFileButton.addEventListener('click', () => {
+        input.click();
+      });
+
+      useSampleImageButton.addEventListener('click', () => {
+        original = img;
+        render();
+        dialog.showModal();
+      });
+
+      input.addEventListener('change', () => {
+        const file = input.files[0];
+        input.value = '';
+
+        const reader = new FileReader();
+
+        reader.addEventListener('load', () => {
+          original = new Image();
+          original.src = reader.result;
+          render();
+        });
+
+        reader.addEventListener('error', () => {
+          alert(reader.error);
+        });
+
+        reader.readAsDataURL(file);
+        dialog.showModal();
+      });
+
+      select.addEventListener('change', () => {
+        const preset = PRESETS.find((preset) => preset.key === select.value);
+        if (!preset) {
+          throw new Error('Preset not found');
+        }
+
+        ratioX = preset.ratioX;
+        ratioXInput.value = ratioX;
+
+        ratioY = preset.ratioY;
+        ratioYInput.value = ratioY;
+
+        sizeX = preset.width;
+        sizeXInput.value = sizeX;
+
+        sizeY = preset.height;
+        sizeYInput.value = sizeY;
+
+        correctForRatio();
+        render();
+      });
+
+      ratioXInput.addEventListener('input', () => {
+        ratioX = ratioXInput.valueAsNumber;
+        render();
+      });
+
+      ratioYInput.addEventListener('input', () => {
+        ratioY = ratioYInput.valueAsNumber;
+        render();
+      });
+
+      sizeXInput.addEventListener('input', () => {
+        sizeX = sizeXInput.valueAsNumber;
+        render();
+      });
+
+      sizeYInput.addEventListener('input', () => {
+        sizeY = sizeYInput.valueAsNumber;
+        render();
+      });
+
+      qualityInput.addEventListener('input', () => {
+        quality = qualityInput.valueAsNumber;
+        render();
+      });
+
+      /** @type {{ x: number; y: number; moved?: boolean; }} */
+      let cursor;
+
+      /** @type {ReturnType<typeof getHandle>} */
+      let handle;
+
+      /** @type {{ x: number; y: number; width: number; height: number; }} */
+      let crop;
+
+      /** @type {{ x: number; y: number; }} */
+      const drag = { x: 0, y: 0 };
+
+      const HANDLE_SIZE = 5;
+
+      function getHandle() {
+        if (!crop) {
+          throw new Error('Crop is not defined');
+        }
+
+        if (!cursor) {
+          return;
+        }
+
+        if (Math.abs(cursor.x - crop.x) <= HANDLE_SIZE && Math.abs(cursor.y - crop.y) <= HANDLE_SIZE) {
+          return 'top-left';
+        }
+
+        if (Math.abs(cursor.x - crop.x - crop.width / 2) <= HANDLE_SIZE && Math.abs(cursor.y - crop.y) <= HANDLE_SIZE) {
+          return 'top-center';
+        }
+
+        if (Math.abs(cursor.x - crop.x - crop.width) <= HANDLE_SIZE && Math.abs(cursor.y - crop.y) <= HANDLE_SIZE) {
+          return 'top-right';
+        }
+
+        if (Math.abs(cursor.x - crop.x) <= HANDLE_SIZE && Math.abs(cursor.y - crop.y - crop.height / 2) <= HANDLE_SIZE) {
+          return 'middle-left';
+        }
+
+        if (Math.abs(cursor.x - crop.x - crop.width) <= HANDLE_SIZE && Math.abs(cursor.y - crop.y - crop.height / 2) <= HANDLE_SIZE) {
+          return 'middle-right';
+        }
+
+        if (Math.abs(cursor.x - crop.x) <= HANDLE_SIZE && Math.abs(cursor.y - crop.y - crop.height) <= HANDLE_SIZE) {
+          return 'bottom-left';
+        }
+
+        if (Math.abs(cursor.x - crop.x - crop.width / 2) <= HANDLE_SIZE && Math.abs(cursor.y - crop.y - crop.height) <= HANDLE_SIZE) {
+          return 'bottom-center';
+        }
+
+        if (Math.abs(cursor.x - crop.x - crop.width) <= HANDLE_SIZE && Math.abs(cursor.y - crop.y - crop.height) <= HANDLE_SIZE) {
+          return 'bottom-right';
+        }
+
+        if (cursor.x >= crop.x && cursor.x <= crop.x + crop.width && cursor.y >= crop.y && cursor.y <= crop.y + crop.height) {
+          return 'inside';
+        }
+
+        return 'outside';
+      }
+
+      function correctForRatio() {
+        if (!ratioX || !ratioY) {
+          return;
+        }
+
+        // Ignore if crop is not defined (changing ratio in the UI with no crop)
+        if (!crop) {
+          return;
+        }
+
+        const ratio = ratioX / ratioY;
+        switch (handle) {
+          case 'top-left': {
+            crop.height = ~~(crop.width / ratio);
+            break;
+          }
+          case 'top-center': {
+            crop.width = ~~(crop.height * ratio);
+            break;
+          }
+          case 'top-right': {
+            crop.width = ~~(crop.height * ratio);
+            break;
+          }
+          case 'middle-left': {
+            crop.height = ~~(crop.width / ratio);
+            break;
+          }
+          case 'middle-right': {
+            crop.height = ~~(crop.width / ratio);
+            break;
+          }
+          case 'bottom-left': {
+            crop.height = ~~(crop.width / ratio);
+            break;
+          }
+          case 'bottom-center': {
+            crop.width = ~~(crop.height * ratio);
+            break;
+          }
+          case 'bottom-right': {
+            crop.width = ~~(crop.height * ratio);
+            break;
+          }
+
+          // Treat changing ratio without a handle as changing the bottom-right handle
+          default: {
+            crop.width = ~~(crop.height * ratio);
+          }
+        }
+
+        if (drag.x > crop.x) {
+          drag.x = crop.x;
+        }
+
+        if (drag.y > crop.y) {
+          drag.y = crop.y;
+        }
+
+        if (drag.x + original.width < crop.x + crop.width) {
+          drag.x = crop.x + crop.width - original.width;
+        }
+
+        if (drag.y + original.height < crop.y + crop.height) {
+          drag.y = crop.y + crop.height - original.height;
+        }
+      }
+
+      canvas.addEventListener('mousedown', (event) => {
+        cursor = {
+          x: event.offsetX,
+          y: event.offsetY,
+        };
+
+        if (event.buttons !== 1) {
+          return;
+        }
+
+        if (crop) {
+          const _handle = getHandle();
+          if (_handle) {
+            handle = _handle;
+            return;
+          }
+        }
+
+        crop = {
+          x: event.offsetX,
+          y: event.offsetY,
+          width: 0,
+          height: 0,
+        };
+
+        handle = 'bottom-right';
+        render();
+      });
+
+      canvas.addEventListener('mousemove', (event) => {
+        cursor = {
+          x: event.offsetX,
+          y: event.offsetY,
+          moved: cursor?.moved || event.movementX || event.movementY,
+        };
+
+        if (event.buttons !== 1) {
+          render();
+          return;
+        }
+
+        if (!crop) {
+          throw new Error('Crop is not defined');
+        }
+
+        if (!handle) {
+          return;
+        }
+
+        switch (handle) {
+          case 'top-left': {
+            crop.x = event.offsetX;
+            crop.y = event.offsetY;
+            crop.width -= event.movementX;
+            crop.height -= event.movementY;
+
+            let flippedX = false;
+            if (crop.width < 0) {
+              crop.x = event.offsetX;
+              crop.width = -crop.width;
+              flippedX = true;
+            }
+
+            let flippedY = false;
+            if (crop.height < 0) {
+              crop.y = event.offsetY;
+              crop.height = -crop.height;
+              flippedY = true;
+            }
+
+            handle = flippedX ? flippedY ? 'bottom-right' : 'top-right' : flippedY ? 'bottom-left' : 'top-left';
+            break;
+          }
+          case 'top-center': {
+            crop.y = event.offsetY;
+            crop.height -= event.movementY;
+            if (crop.height < 0) {
+              crop.y = event.offsetY;
+              crop.height = -crop.height;
+              handle = 'bottom-center';
+            }
+
+            break;
+          }
+          case 'top-right': {
+            crop.y = event.offsetY;
+            crop.width = event.offsetX - crop.x;
+            crop.height -= event.movementY;
+
+            let flippedX = false;
+            if (crop.width < 0) {
+              crop.x = event.offsetX;
+              crop.width = -crop.width;
+              flippedX = true;
+            }
+
+            let flippedY = false;
+            if (crop.height < 0) {
+              crop.y = event.offsetY;
+              crop.height = -crop.height;
+              flippedY = true;
+            }
+
+            handle = flippedX ? flippedY ? 'bottom-left' : 'top-left' : flippedY ? 'bottom-right' : 'top-right';
+            break;
+          }
+          case 'middle-left': {
+            crop.x = event.offsetX;
+            crop.width -= event.movementX;
+            if (crop.width < 0) {
+              crop.x = event.offsetX;
+              crop.width = -crop.width;
+              handle = 'middle-right';
+            }
+
+            break;
+          }
+          case 'middle-right': {
+            crop.width = event.offsetX - crop.x;
+            if (crop.width < 0) {
+              crop.x = event.offsetX;
+              crop.width = -crop.width;
+              handle = 'middle-left';
+            }
+
+            break;
+          }
+          case 'bottom-left': {
+            crop.x = event.offsetX;
+            crop.width -= event.movementX;
+            crop.height = event.offsetY - crop.y;
+
+            let flippedX = false;
+            if (crop.width < 0) {
+              crop.x = event.offsetX;
+              crop.width = -crop.width;
+              flippedX = true;
+            }
+
+            let flippedY = false;
+            if (crop.height < 0) {
+              crop.y = event.offsetY;
+              crop.height = -crop.height;
+              flippedY = true;
+            }
+
+            handle = flippedX ? flippedY ? 'top-right' : 'bottom-right' : flippedY ? 'top-left' : 'bottom-left';
+            break;
+          }
+          case 'bottom-center': {
+            crop.height = event.offsetY - crop.y;
+            if (crop.height < 0) {
+              crop.y = event.offsetY;
+              crop.height = -crop.height;
+              handle = 'top-center';
+            }
+
+            break;
+          }
+          case 'bottom-right': {
+            crop.width = event.offsetX - crop.x;
+            crop.height = event.offsetY - crop.y;
+
+            let flippedX = false;
+            if (crop.width < 0) {
+              crop.x = event.offsetX;
+              crop.width = -crop.width;
+              flippedX = true;
+            }
+
+            let flippedY = false;
+            if (crop.height < 0) {
+              crop.y = event.offsetY;
+              crop.height = -crop.height;
+              flippedY = true;
+            }
+
+            handle = flippedX ? flippedY ? 'top-left' : 'bottom-left' : flippedY ? 'top-right' : 'bottom-right';
+            break;
+          }
+          case 'inside': {
+            crop.x += event.movementX;
+            crop.y += event.movementY;
+
+            if (crop.x < drag.x) {
+              crop.x = drag.x;
+            }
+
+            if (crop.x < 0) {
+              crop.x = 0;
+            }
+
+            if (crop.y < drag.y) {
+              crop.y = drag.y;
+            }
+
+            if (crop.y < 0) {
+              crop.y = 0;
+            }
+
+            if (crop.x + crop.width > drag.x + original.width) {
+              crop.x = drag.x + original.width - crop.width;
+            }
+
+            if (crop.x + crop.width > canvas.width) {
+              crop.x = canvas.width - crop.width;
+            }
+
+            if (crop.y + crop.height > drag.y + original.height) {
+              crop.y = drag.y + original.height - crop.height;
+            }
+
+            if (crop.y + crop.height > canvas.height) {
+              crop.y = canvas.height - crop.height;
+            }
+
+            break;
+          }
+          case 'outside': {
+            drag.x += event.movementX;
+            drag.y += event.movementY;
+
+            if (drag.x > crop.x) {
+              drag.x = crop.x;
+            }
+
+            if (drag.y > crop.y) {
+              drag.y = crop.y;
+            }
+
+            if (drag.x + original.width < crop.x + crop.width) {
+              drag.x = crop.x + crop.width - original.width;
+            }
+
+            if (drag.y + original.height < crop.y + crop.height) {
+              drag.y = crop.y + crop.height - original.height;
+            }
+
+            break;
+          }
+        }
+
+        correctForRatio();
+        render();
+      });
+
+      canvas.addEventListener('mouseup', () => {
+        if (!crop) {
+          throw new Error('Crop is not defined');
+        }
+
+        if (!crop.width || !crop.height) {
+          crop = undefined;
+        }
+
+        if (cursor && !cursor.moved) {
+          crop = undefined;
+        }
+
+        cursor = undefined;
+        handle = undefined;
+        render();
+      });
+
+      function render() {
+        canvas.width = canvas.parentElement.clientWidth;
+        canvas.height = canvas.parentElement.clientHeight;
+        if (cursor && crop) {
+          const handle = getHandle();
+          switch (handle) {
+            case 'top-left': {
+              canvas.style.cursor = 'nw-resize';
+              break;
+            }
+            case 'top-center': {
+              canvas.style.cursor = 'n-resize';
+              break;
+            }
+            case 'top-right': {
+              canvas.style.cursor = 'ne-resize';
+              break;
+            }
+            case 'middle-left': {
+              canvas.style.cursor = 'w-resize';
+              break;
+            }
+            case 'middle-right': {
+              canvas.style.cursor = 'e-resize';
+              break;
+            }
+            case 'bottom-left': {
+              canvas.style.cursor = 'sw-resize';
+              break;
+            }
+            case 'bottom-center': {
+              canvas.style.cursor = 's-resize';
+              break;
+            }
+            case 'bottom-right': {
+              canvas.style.cursor = 'se-resize';
+              break;
+            }
+            case 'inside': {
+              canvas.style.cursor = 'move';
+              break;
+            }
+            case 'outside': {
+              canvas.style.cursor = 'move';
+              break;
+            }
+            default: {
+              canvas.style.cursor = 'initial';
+              break;
+            }
+          }
+        }
+        else {
+          canvas.style.cursor = 'initial';
+        }
+
+        const context = canvas.getContext('2d');
+        context.clearRect(0, 0, canvas.width, canvas.height);
+
+        context.drawImage(original, drag.x, drag.y);
+
+        if (crop) {
+          const img = renderImage();
+          context.drawImage(img, crop.x, crop.y, crop.width, crop.height);
+
+          context.strokeRect(crop.x, crop.y, crop.width, crop.height);
+
+          if (crop.width && crop.height) {
+            context.fillStyle = 'rgba(0, 0, 0, 0.25)';
+            context.fillRect(0, 0, canvas.width, crop.y);
+            context.fillRect(0, crop.y, crop.x, crop.height);
+            context.fillRect(crop.x + crop.width, crop.y, canvas.width - crop.x - crop.width, crop.height);
+            context.fillRect(0, crop.y + crop.height, canvas.width, canvas.height - crop.y - crop.height);
+          }
+          else {
+            context.fillStyle = 'rgba(0, 0, 0, 0.25)';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+          }
+
+          context.fillStyle = 'gray';
+
+          context.ellipse(crop.x, crop.y, HANDLE_SIZE, HANDLE_SIZE, 0, 0, Math.PI * 2);
+          context.ellipse(crop.x + crop.width / 2, crop.y, HANDLE_SIZE, HANDLE_SIZE, 0, 0, Math.PI * 2);
+          context.closePath();
+          context.closePath();
+          context.ellipse(crop.x + crop.width, crop.y, HANDLE_SIZE, HANDLE_SIZE, 0, 0, Math.PI * 2);
+          context.closePath();
+
+          context.ellipse(crop.x, crop.y + crop.height / 2, HANDLE_SIZE, HANDLE_SIZE, 0, 0, Math.PI * 2);
+          context.closePath();
+          context.ellipse(crop.x + crop.width, crop.y + crop.height / 2, HANDLE_SIZE, HANDLE_SIZE, 0, 0, Math.PI * 2);
+          context.closePath();
+
+          context.ellipse(crop.x, crop.y + crop.height, HANDLE_SIZE, HANDLE_SIZE, 0, 0, Math.PI * 2);
+          context.closePath();
+          context.ellipse(crop.x + crop.width / 2, crop.y + crop.height, HANDLE_SIZE, HANDLE_SIZE, 0, 0, Math.PI * 2);
+          context.closePath();
+          context.ellipse(crop.x + crop.width, crop.y + crop.height, HANDLE_SIZE, HANDLE_SIZE, 0, 0, Math.PI * 2);
+          context.closePath();
+
+          context.fill();
+        }
+
+        debugDiv.replaceChildren();
+
+        const cursorDiv = document.createElement('div');
+        cursorDiv.textContent = `Cursor: ${cursor ? `${cursor.x}, ${cursor.y}${cursor.moved ? ', moved' : ''}` : 'none'}`;
+        debugDiv.append(cursorDiv);
+
+        const handleDiv = document.createElement('div');
+        handleDiv.textContent = `Handle: ${handle || 'none'}`;
+        debugDiv.append(handleDiv);
+
+        const cropDiv = document.createElement('div');
+        cropDiv.textContent = `Crop: ${crop ? `${crop.x}, ${crop.y}, ${crop.width}, ${crop.height}` : 'none'}`;
+        debugDiv.append(cropDiv);
+
+        const ratioDiv = document.createElement('div');
+        ratioDiv.textContent = `Ratio: ${ratioX && ratioY ? `${ratioX}/${ratioY} (${(ratioX / ratioY).toFixed(2)})` : 'none'}`;
+        debugDiv.append(ratioDiv);
+
+        const sizeDiv = document.createElement('div');
+        sizeDiv.textContent = `Size: ${sizeX && sizeY ? `${sizeX}x${sizeY}` : 'none'}`;
+        debugDiv.append(sizeDiv);
+
+        const dragDiv = document.createElement('div');
+        dragDiv.textContent = `Drag: ${drag.x}, ${drag.y}`;
+        debugDiv.append(dragDiv);
+
+        const formatDiv = document.createElement('div');
+        formatDiv.textContent = `Format: ${format.name}${format.supportsQuality ? ` (${(quality * 100).toFixed(0)}%)` : ''}`;
+        debugDiv.append(formatDiv);
+      }
+
+      function reset() {
+        select.value = DEFAULT_PRESET.key;
+        ratioX = DEFAULT_RATIO_X;
+        ratioXInput.value = DEFAULT_RATIO_X;
+        ratioY = DEFAULT_RATIO_Y;
+        ratioYInput.value = DEFAULT_RATIO_Y;
+        sizeX = DEFAULT_SIZE_X;
+        sizeXInput.value = DEFAULT_SIZE_X;
+        sizeY = DEFAULT_SIZE_Y;
+        sizeYInput.value = DEFAULT_SIZE_Y;
+        quality = DEFAULT_QUALITY;
+        qualityInput.value = DEFAULT_QUALITY;
+        format = DEFAULT_FORMAT;
+        renderFormats();
+        cursor = undefined;
+        handle = undefined;
+        crop = undefined;
+        drag.x = 0;
+        drag.y = 0;
+      }
+
+      resetChangesButton.addEventListener('click', () => {
+        if (!confirm('Are you sure you want to reset changes?')) {
+          return;
+        }
+
+        reset();
+        render();
+      });
+
+      function renderImage() {
+        const canvas = document.createElement('canvas');
+        canvas.width = sizeX ?? crop.width;
+        canvas.height = sizeY ?? crop.height;
+
+        const context = canvas.getContext('2d');
+        context.drawImage(original, crop.x - drag.x, crop.y - drag.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
+
+        const url = canvas.toDataURL('image/' + format.key, quality);
+        const img = document.createElement('img');
+        img.src = url;
+
+        return img;
+      }
+
+      confirmButton.addEventListener('click', () => {
+        const img = renderImage();
+        window.open(img.src, '_blank');
+      });
+
+      cancelButton.addEventListener('click', () => {
+        if (!confirm('Are you sure you want to cancel?')) {
+          return;
+        }
+
+        reset();
+        dialog.close();
+      });
+    </script>
+    <style>
+      body {
+        font: icon;
+      }
+
+      dialog {
+        border: 0;
+        border-radius: 1ch;
+        box-shadow: 0 0 1ch rgba(0, 0, 0, 0.5);
+        height: 90vh;
+        width: 90vw;
+      }
+
+      canvas {
+        background: repeating-conic-gradient(#d0d0d0 0 25%, transparent 0 50%) 50% / 20px 20px;
+        border-radius: 1px;
+      }
+
+      button {
+        background: #fff;
+        border: none;
+        border-radius: 1ch;
+        box-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+        cursor: pointer;
+        padding: 1ch 2ch;
+      }
+
+      button:hover {
+        background: #f0f0f0;
+      }
+
+      button.danger {
+        color: red;
+      }
+    </style>
+  </head>
+  <body>
+    <input type="file" accept="image/*" style="display: none;" />
+    <img src="sample.jpg" style="display: none;" />
+    <button id="openImageFileButton">Open image file</button>
+    <button id="useSampleImageButton">Use sample image</button>
+    <dialog>
+      <div style="display: flex; flex-direction: column; gap: 1ch; height: 100%; width: 100%;">
+        <div style="display: flex; flex: 1; gap: 1ch; overflow: hidden;">
+          <div style="flex: 1; overflow: hidden;">
+            <canvas style="width: 100%; height: 100%;"></canvas>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: .5ch; width: 25ch;">
+            <select></select>
+            <strong style="margin-top: 1ch;">Aspect ratio:</strong>
+            <div style="align-items: center; display: flex; gap: 1ch;">
+              <input id="ratioXInput" type="number" min="1" max="16" placeholder="auto" style="flex: 1; width: 5ch;" />
+              /
+              <input id="ratioYInput" type="number" min="1" max="16" placeholder="auto" style="flex: 1; width: 5ch;" />
+            </div>
+            <strong style="margin-top: 1ch;">Width and height:</strong>
+            <div style="align-items: center; display: flex; gap: 1ch;">
+              <input id="sizeXInput" type="number" min="1" max="2048" placeholder="auto" style="flex: 1; width: 5ch;" />
+              x
+              <input id="sizeYInput" type="number" min="1" max="2048" placeholder="auto" style="flex: 1; width: 5ch;" />
+            </div>
+            <strong style="margin-top: 1ch;">Format conversion:</strong>
+            <div id="formatsDiv"></div>
+            Quality:
+            <input id="qualityInput" type="range" min="0" max="1" step=".01" />
+            <strong style="margin-top: 1ch;">Debug information:</strong>
+            <div id="debugDiv"></div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 1ch;">
+          <button id="resetChangesButton" style="color: red; margin: 0 auto 0 0;">Reset Changes</button>
+          <button id="confirmButton">Confirm</button>
+          <button id="cancelButton">Cancel</button>
+        </div>
+      </div>
+    </dialog>
+  </body>
+</html>
